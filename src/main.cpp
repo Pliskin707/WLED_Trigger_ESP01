@@ -2,8 +2,12 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
-#include <ESP8266HTTPClient.h>
-#include <ArduinoOTA.h>
+#include "ota/ota.hpp"
+#include "wledctrl/wledctrl.hpp"
+#include "projutils/projutils.hpp"
+#include "config.hpp"
+
+using namespace wledTrigger;
 
 /** Wifi authentication **
  * 
@@ -11,20 +15,10 @@
  * 
  * #pragma once
  * 
- * const char* ssid = "<YourSSIDhere>";
+ * const char* ssid2 = "<YourSSIDhere>";
  * const char* password = "<YourPasswordHere>";
  */
 #include "../../../../../../wifiauth2.h"
-
-#ifndef DEBUG_PRINT
-#define dprintf(...) ;
-#else
-#define dprintf(fstr, ...) Serial.printf_P(PSTR(fstr), ##__VA_ARGS__);
-#endif
-
-#define LEDPIN  2
-#define WLEDIP "192.168.0.24"
-const char * deviceName = "WLED_Trigger";
 
 static bool mDNS_init_ok = false;
 WiFiClient client;
@@ -33,6 +27,8 @@ HTTPClient http;
 void setup() {
   #ifndef DEBUG_PRINT
   pinMode(LEDPIN, OUTPUT);
+  pinMode(BTNGATE, INPUT_PULLUP);
+  pinMode(BTNDOOR, INPUT_PULLUP);
   #else
   Serial.begin(115200);
   #endif
@@ -42,53 +38,42 @@ void setup() {
   IPAddress gateway(192, 168, 0, 1);
   IPAddress subnet(255, 255, 255, 0);
   IPAddress dns(1, 1, 1, 1);
-  WiFi.hostname(deviceName);
+  WiFi.hostname(DEVICENAME);
   WiFi.mode(WIFI_STA);
-  WiFi.config(local_IP, gateway, subnet, dns);
-  WiFi.begin(ssid, password);
+  // WiFi.config(local_IP, gateway, subnet, dns);
+  WiFi.begin(ssid2, password);
   wifi_set_sleep_type(NONE_SLEEP_T);
 
-  while (WiFi.status() != WL_CONNECTED)
+  wl_status_t wstat;
+  while (true)
   {
     delay(500);
+    wstat = WiFi.status();
+    if (wstat == WL_CONNECTED)
+      break;
+
     #ifndef DEBUG_PRINT
     digitalWrite(LEDPIN, !digitalRead(LEDPIN));
-    #else
-    Serial.println(F("Connecting..."));
     #endif
-  }
+    dprintf("Connecting (%d) ...\n", wstat);
+  };
 
   // mDNS
-  mDNS_init_ok = MDNS.begin(deviceName);
+  mDNS_init_ok = MDNS.begin(DEVICENAME);
   // if (mDNS_init_ok)
   //   MDNS.addService("trigger", "tcp", 8080);
 
   // OTA
-  ArduinoOTA.setHostname(deviceName);
-  ArduinoOTA.onStart([]() 
-  {
-    wifi_set_sleep_type(NONE_SLEEP_T);
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    #ifndef DEBUG_PRINT
-    digitalWrite(LEDPIN, !digitalRead(LEDPIN));
-    #endif
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    ESP.reset();
-  });
-  ArduinoOTA.onEnd([]() {
-    ESP.reset();
-  });
-  ArduinoOTA.begin();
+  ota::begin(DEVICENAME);
 }
 
 void loop() {
   const uint32_t time = millis();
   static uint32_t next = 0;
+  static wledControl wled(WLEDIP);
 
   // Wifi status
-  const bool connected = (WiFi.status() == WL_CONNECTED);
+  const bool connected = WiFi.isConnected();
   #ifndef DEBUG_PRINT
   digitalWrite(LEDPIN, !connected);
   #endif
@@ -98,27 +83,70 @@ void loop() {
     MDNS.update();
 
   // OTA
-  ArduinoOTA.handle();
+  ota::handle();
 
   // program logic
   if (time >= next)
   {
-    next = time + 5000;
-    dprintf("Systime: %lu ms\n", time);
+    next = time + 10000;
+    dprintf("Systime: %lu ms; WLAN: %sconnected (as %s)\n", time, (connected ? "":"dis"), WiFi.localIP().toString().c_str());
 
     if (connected)
     {
-      // HTTP
-      http.begin(client, String("http://") + WLEDIP + "/json/state");
-      const int result = http.GET();
-      dprintf("GET result: %d\n", result);
-      if (result == 200)  // == OK
+      if (wled.updateStatus())
       {
-        dprintf("Response: \"%s\"\n", http.getString().c_str());
+        dprintf("WLED state: %s and %slive with %.2f%% brightness\n", (wled.isOn() ? "ON":"OFF"), (wled.isLive() ? "":"not "), ((float) wled.getBrigthness()) / 2.55f);
       }
-      http.end();
+
+      #ifdef DEBUG_PRINT
+      // auto toggle since the usb-programmer has no buttons attached
+      static bool presetApplied = false;
+      if (presetApplied)
+        wled.resetLiveDataOverride();
+      else
+        wled.setPreset(3);
+
+      presetApplied ^= true;
+      #endif
     }
+    else
+      WiFi.reconnect();
   }
+
+  #ifndef DEBUG_PRINT
+  if (connected)
+  {
+    // read the button pins
+    static bool prevBtnDoor = HIGH, prevBtnGate = HIGH, isSet = false;
+    const bool btnDoor = digitalRead(BTNDOOR), btnGate = digitalRead(BTNGATE);
+    static uint32_t activationTime = 0;
+    
+    if (!isSet)
+    {
+      // activate?
+      if (prevBtnDoor && !btnDoor)
+      {
+        isSet = wled.setPreset(4);
+      }
+      else if (prevBtnGate && !btnGate)
+      {
+        isSet = wled.setPreset(5);
+      }
+
+      if (isSet)
+        activationTime = time;
+    }
+    else
+    {
+      // deactivate
+      if (time > (activationTime + 3000))
+        isSet = !wled.resetLiveDataOverride();
+    }
+
+    prevBtnDoor = btnDoor;
+    prevBtnGate = btnGate;
+  }
+  #endif
 
   yield();
 }
