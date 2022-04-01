@@ -174,7 +174,7 @@ bool wledControl::resetLiveDataOverride (void)
     if ((this->_preset >= 0) && this->_wasOn)
         doc["ps"] = this->_preset;          // restore 
     
-    doc["on"] = this->_wasOn;
+    doc["on"] = this->_wasOn || this->_isLive;
 
     String json;
     serializeJson(doc, json);
