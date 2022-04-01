@@ -14,3 +14,7 @@ When flashed over the air (requires at least one serial flash before OTA is poss
 The program requests some information from the WLED controller and stores it for later operation.
 
 User interaction is possible with some buttons on GPIO0 and GPIO1 (active low, pull up). If a pin gets shorted to ground, WLED preset 4 or 5 (depending on the pin) gets activated for three seconds. Afterwards the previously stored values get restored.
+
+# :warning: Attention
+
+This controller is expected to be mains powered. Absolutely no effort was made (yet) to reduce power consumption. 
